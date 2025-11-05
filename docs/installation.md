@@ -87,15 +87,15 @@ claude --version
 3. **取得**: 生成されたPDFをローカルに転送
 4. **クリーンアップ**: リモートの一時ファイルを削除
 
-### 3. ytdl-claude (YouTube動画ダウンロード)
+### 3. ytdl (YouTube動画ダウンロード)
 
-**ytdl-claude**は、YouTube動画と字幕をダウンロードするツールです。
+**ytdl**は、YouTube動画と字幕をダウンロードするツール（ytdl-claude関数）です。
 
 > **Note**: このツールの具体的なインストール方法については、プロジェクト管理者にお問い合わせください。
 
 確認:
 ```bash
-ytdl-claude --help
+ytdl --help
 ```
 
 ### 4. whisper-remote (Whisper文字起こし)

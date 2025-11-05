@@ -1,0 +1,5 @@
+# rehearsal-workflow GUI依存パッケージ
+# インストール: pip3 install -r requirements.txt
+
+PySide6>=6.6.0
+PyYAML>=6.0

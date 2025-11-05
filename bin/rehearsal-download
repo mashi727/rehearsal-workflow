@@ -21,13 +21,13 @@
 #   YYYYMMDD_YYYY_MM_DD_タイトル_wp.srt  - Whisper高精度字幕
 #
 # 処理フロー:
-#   1. YouTube動画 + 字幕をダウンロード（ytdl-claude）
+#   1. YouTube動画 + 字幕をダウンロード（ytdl）
 #   2. ダウンロードされたファイルを検出
 #   3. Whisper文字起こしを起動（whisper-remote --demucs）
 #   4. 次のステップ（/rehearsal）の使用方法を表示
 #
 # 依存:
-#   - ytdl-claude: YouTube動画ダウンロードツール
+#   - ytdl: YouTube動画ダウンロードツール（ytdl-claude関数）
 #   - whisper-remote: リモートGPU Whisper文字起こしツール
 #
 # 作成日: 2025-11-05
@@ -83,25 +83,53 @@ if [[ ! "$youtube_url" =~ ^https?://(www\.)?(youtube\.com|youtu\.be)/ ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# ステップ1: YouTube動画ダウンロード
+# ステップ0: 既存ファイルの確認
 # ------------------------------------------------------------------------------
-log_step "Step 1/3: Downloading YouTube video and subtitles..."
-echo ""
+# nullglobを設定（グロブパターンがマッチしない場合でもエラーにしない）
+setopt localoptions nullglob
 
-# ダウンロード前のmp4ファイル数を記録
-local before_count=$(ls -1 *.mp4 2>/dev/null | wc -l | tr -d ' ')
-
-if ! ytdl-claude "$youtube_url" -d; then
-    log_error "YouTube download failed"
-    return 1
+# URLからビデオIDを抽出して既存ファイルを検索
+local video_id=""
+if [[ "$youtube_url" =~ youtu\.be/([^?]+) ]]; then
+    video_id="${match[1]}"
+elif [[ "$youtube_url" =~ '[?&]v=([^&]+)' ]]; then
+    video_id="${match[1]}"
 fi
 
-# ダウンロード後のmp4ファイル数を確認
-local after_count=$(ls -1 *.mp4 2>/dev/null | wc -l | tr -d ' ')
+local existing_video=""
+if [[ -n "$video_id" ]]; then
+    # ビデオIDを含むmp4ファイルを検索
+    for file in *.mp4(N); do
+        if [[ "$file" == *"$video_id"* ]]; then
+            existing_video="$file"
+            break
+        fi
+    done
+fi
 
-if [[ $after_count -le $before_count ]]; then
-    log_error "No new video file detected after download"
-    return 1
+# 既存ファイルがある場合はダウンロードをスキップ
+local skip_download=false
+if [[ -n "$existing_video" ]] && [[ -f "$existing_video" ]]; then
+    log_warn "Video file already exists: $existing_video"
+    log_info "Skipping download step..."
+    skip_download=true
+    echo ""
+fi
+
+# ------------------------------------------------------------------------------
+# ステップ1: YouTube動画ダウンロード
+# ------------------------------------------------------------------------------
+if [[ "$skip_download" == false ]]; then
+    log_step "Step 1/3: Downloading YouTube video and subtitles..."
+    echo ""
+
+    if ! ytdl "$youtube_url" -d; then
+        log_error "YouTube download failed"
+        return 1
+    fi
+else
+    log_step "Step 1/3: Download skipped (file exists)"
+    echo ""
 fi
 
 # ------------------------------------------------------------------------------
@@ -111,7 +139,13 @@ log_step "Step 2/3: Detecting downloaded files..."
 echo ""
 
 # 最新のmp4ファイルを取得（タイムスタンプ順）
-local video_file=$(ls -t *.mp4 2>/dev/null | head -1)
+# 既存ファイルがある場合はそれを使用、なければ最新を取得
+local video_file=""
+if [[ -n "$existing_video" ]] && [[ -f "$existing_video" ]]; then
+    video_file="$existing_video"
+else
+    video_file=$(ls -t *.mp4 2>/dev/null | head -1)
+fi
 
 if [[ -z "$video_file" ]] || [[ ! -f "$video_file" ]]; then
     log_error "Video file not found"
