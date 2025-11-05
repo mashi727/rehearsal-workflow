@@ -1,0 +1,161 @@
+#!/usr/bin/env zsh
+# ==============================================================================
+# tex2chapters - LaTeX文書からチャプター情報を抽出し、複数フォーマットで出力
+# ==============================================================================
+#
+# 概要:
+#   LuaLaTeX形式のリハーサル記録TeXファイルから、タイムスタンプ付きの
+#   section/subsection/subsubsectionを抽出し、YouTube用とMovie Viewer用の
+#   2つのチャプターリストファイルを生成する。
+#
+# 使用方法:
+#   tex2chapters <tex_file>
+#
+# 引数:
+#   tex_file  - 処理対象のLaTeX文書ファイル（.tex）
+#
+# 出力:
+#   <basename>_youtube.txt      - YouTube用チャプターリスト（HH:MM:SS形式）
+#   <basename>_movieviewer.txt  - Movie Viewer用チャプターリスト（H:MM:SS.mmm形式）
+#
+# 入力形式（TeXファイル内）:
+#   \section{タイトル [HH:MM:SS.mmm]}
+#   \subsection{タイトル [HH:MM:SS.mmm]}
+#   \subsubsection{タイトル [HH:MM:SS.mmm]}
+#
+# 出力形式:
+#   YouTube:      00:11:35 冒頭部分の練習
+#   Movie Viewer: 0:11:35.959 冒頭部分の練習
+#
+# 依存:
+#   - grep (正規表現検索)
+#   - sed (文字列置換)
+#   - awk (テキスト処理)
+#   - sort (ソート)
+#
+# 作成日: 2025-11-05
+# 更新日: 2025-11-05
+# バージョン: 1.0.0
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 引数チェック
+# ------------------------------------------------------------------------------
+local tex_file="$1"
+
+if [[ -z "$tex_file" || ! -f "$tex_file" ]]; then
+    echo "Usage: tex2chapters <tex_file>" >&2
+    echo "Generates: <basename>_youtube.txt and <basename>_movieviewer.txt" >&2
+    return 1
+fi
+
+# ------------------------------------------------------------------------------
+# 出力ファイル名の生成
+# ------------------------------------------------------------------------------
+# :r = 拡張子を除去
+# :t = パスを除去（ファイル名のみ）
+local basename="${tex_file:r:t}"
+local youtube_file="${basename}_youtube.txt"
+local movieviewer_file="${basename}_movieviewer.txt"
+
+# ------------------------------------------------------------------------------
+# メイン処理パイプライン
+# ------------------------------------------------------------------------------
+# 1. TeXファイルからタイムスタンプ付きのセクション行を抽出
+# 2. LaTeXコマンドを除去
+# 3. 時間範囲（〜を含む）の行を除外
+# 4. タイムスタンプとタイトルを分離
+# 5. タイムスタンプでソート
+# 6. 重複を除去
+# 7. 2つの形式で出力
+# ------------------------------------------------------------------------------
+
+grep -E '\\(section|subsection|subsubsection)\{.*\[([0-9]{2}:)?[0-9]{2}:[0-9]{2}' "$tex_file" | \
+sed -E 's/\\(section|subsection|subsubsection)\{//g' | \
+sed 's/}$//g' | \
+grep -v '〜' | \
+awk -F'\\[' '{
+    # タイトルとタイムスタンプを分離
+    if (NF == 2) {
+        title = $1
+        # タイトルの前後の空白を除去
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", title)
+        timestamp = $2
+        # タイムスタンプの後ろの]以降を除去
+        gsub(/\].*$/, "", timestamp)
+        if (title != "" && timestamp != "") {
+            # パイプ区切りで出力（後続処理のため）
+            print timestamp "|" title
+        }
+    }
+}' | \
+sort -t'|' -k1,1 | \
+awk -F'|' '!seen[$0]++' | \
+{
+    # ------------------------------------------------------------------------------
+    # 出力ファイル生成
+    # ------------------------------------------------------------------------------
+    # 既存ファイルがあればクリア
+    > "$youtube_file"
+    > "$movieviewer_file"
+
+    # パイプから1行ずつ読み込み
+    while IFS='|' read -r timestamp title; do
+        # タイムスタンプの形式を判定して処理
+
+        # パターン1: ミリ秒あり（HH:MM:SS.mmm）
+        if [[ $timestamp =~ ^([0-9]{2}):([0-9]{2}):([0-9]{2})\.([0-9]{3})$ ]]; then
+            hh=$match[1]  # 時
+            mm=$match[2]  # 分
+            ss=$match[3]  # 秒
+            ms=$match[4]  # ミリ秒
+
+            # YouTube形式: HH:MM:SS（ミリ秒なし、時は2桁固定）
+            echo "${hh}:${mm}:${ss} ${title}" >> "$youtube_file"
+
+            # Movie Viewer形式: H:MM:SS.mmm（時は1桁可、ミリ秒あり）
+            h=$((10#$hh))  # 先頭の0を削除（10#は10進数として解釈）
+            echo "${h}:${mm}:${ss}.${ms} ${title}" >> "$movieviewer_file"
+
+        # パターン2: ミリ秒なし（HH:MM:SS）
+        elif [[ $timestamp =~ ^([0-9]{2}):([0-9]{2}):([0-9]{2})$ ]]; then
+            hh=$match[1]
+            mm=$match[2]
+            ss=$match[3]
+
+            # YouTube形式: そのまま
+            echo "${hh}:${mm}:${ss} ${title}" >> "$youtube_file"
+
+            # Movie Viewer形式: .000を追加
+            h=$((10#$hh))
+            echo "${h}:${mm}:${ss}.000 ${title}" >> "$movieviewer_file"
+        fi
+    done
+
+    # ------------------------------------------------------------------------------
+    # 結果レポート
+    # ------------------------------------------------------------------------------
+    local count=$(wc -l < "$youtube_file" | tr -d ' ')
+    echo "✓ Generated ${count} chapters"
+    echo "  YouTube format: ${youtube_file}"
+    echo "  Movie Viewer format: ${movieviewer_file}"
+}
+
+# ==============================================================================
+# 使用例:
+#   tex2chapters リハーサル記録.tex
+#
+# 出力例:
+#   ✓ Generated 42 chapters
+#     YouTube format: リハーサル記録_youtube.txt
+#     Movie Viewer format: リハーサル記録_movieviewer.txt
+#
+# YouTubeチャプターの使い方:
+#   1. YouTube動画の説明欄に_youtube.txtの内容をコピー＆ペースト
+#   2. 自動的にチャプター機能が有効化される
+#
+# Movie Viewerチャプターの使い方:
+#   1. Movie Viewerで動画を開く
+#   2. _movieviewer.txtファイルを読み込む
+#   3. ミリ秒精度で正確なチャプタージャンプが可能
+# ==============================================================================

@@ -1,0 +1,280 @@
+#!/usr/bin/env zsh
+# ==============================================================================
+# rehearsal-finalize - リハーサル記録の最終処理（PDF生成 + チャプター抽出）
+# ==============================================================================
+#
+# 概要:
+#   Claude AIが生成したLaTeXリハーサル記録から、PDFファイルを生成し、
+#   YouTube用およびMovie Viewer用のチャプターリストを抽出する。
+#   リハーサル記録作成ワークフローの第3ステップ（最終ステップ）。
+#
+# 使用方法:
+#   rehearsal-finalize <tex_file>
+#
+# 引数:
+#   tex_file  - リハーサル記録のLaTeXファイル（.tex）（必須）
+#
+# 出力:
+#   <basename>.pdf                 - PDF形式リハーサル記録
+#   <basename>_youtube.txt         - YouTube用チャプターリスト（HH:MM:SS形式）
+#   <basename>_movieviewer.txt     - Movie Viewer用チャプターリスト（H:MM:SS.mmm形式）
+#
+# 処理フロー:
+#   1. TeXファイルの存在確認
+#   2. LuaLaTeX PDFコンパイル（luatex-pdf）
+#   3. チャプターリスト抽出（tex2chapters）
+#   4. 成果物レポートの表示
+#
+# 依存:
+#   - luatex-pdf: リモートサーバー経由LuaLaTeXコンパイラ
+#   - tex2chapters: チャプター抽出zsh関数
+#
+# 作成日: 2025-11-05
+# 更新日: 2025-11-05
+# バージョン: 1.0.0
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 色付きログ出力の定義
+# ------------------------------------------------------------------------------
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly CYAN='\033[0;36m'
+readonly MAGENTA='\033[0;35m'
+readonly NC='\033[0m' # No Color
+
+log_info() {
+    echo "${GREEN}[INFO]${NC} $1"
+}
+
+log_warn() {
+    echo "${YELLOW}[WARN]${NC} $1"
+}
+
+log_error() {
+    echo "${RED}[ERROR]${NC} $1"
+}
+
+log_step() {
+    echo "${CYAN}[STEP]${NC} $1"
+}
+
+log_success() {
+    echo "${GREEN}[SUCCESS]${NC} $1"
+}
+
+# ------------------------------------------------------------------------------
+# 引数チェック
+# ------------------------------------------------------------------------------
+local tex_file="$1"
+
+if [[ -z "$tex_file" ]]; then
+    log_error "LaTeX file is required"
+    echo "Usage: rehearsal-finalize <tex_file>" >&2
+    echo "" >&2
+    echo "Example:" >&2
+    echo "  rehearsal-finalize \"20251102_ドヴォルザーク交響曲第8番_リハーサル記録.tex\"" >&2
+    return 1
+fi
+
+if [[ ! -f "$tex_file" ]]; then
+    log_error "LaTeX file not found: $tex_file"
+    echo "" >&2
+    echo "Please ensure the file exists in the current directory." >&2
+    return 1
+fi
+
+# .tex拡張子の確認
+if [[ "$tex_file" != *.tex ]]; then
+    log_warn "File does not have .tex extension: $tex_file"
+    log_warn "Continuing anyway..."
+fi
+
+# ------------------------------------------------------------------------------
+# ファイル情報の表示
+# ------------------------------------------------------------------------------
+local basename="${tex_file:r}"
+local pdf_file="${basename}.pdf"
+local youtube_chapters="${basename}_youtube.txt"
+local movieviewer_chapters="${basename}_movieviewer.txt"
+
+echo ""
+log_info "Processing LaTeX file:"
+log_info "  Input:  ${tex_file} ($(wc -l < "$tex_file" | tr -d ' ') lines)"
+echo ""
+
+# ------------------------------------------------------------------------------
+# ステップ1: LuaLaTeX PDFコンパイル
+# ------------------------------------------------------------------------------
+log_step "Step 1/2: Compiling LaTeX to PDF (remote server)..."
+echo ""
+
+log_info "Sending to remote LuaTeX server..."
+log_warn "This may take 1-3 minutes depending on document complexity."
+echo ""
+
+if ! luatex-pdf "$tex_file"; then
+    log_error "LaTeX compilation failed"
+    echo "" >&2
+    echo "Troubleshooting:" >&2
+    echo "  1. Check LaTeX syntax errors in $tex_file" >&2
+    echo "  2. Ensure remote server (luatex-pdf) is accessible" >&2
+    echo "  3. Check font availability (Libertinus, HaranoAji)" >&2
+    return 1
+fi
+
+# PDF生成確認
+if [[ ! -f "$pdf_file" ]]; then
+    log_error "PDF file not generated: $pdf_file"
+    return 1
+fi
+
+local pdf_size=$(du -h "$pdf_file" | cut -f1)
+local pdf_pages=$(pdfinfo "$pdf_file" 2>/dev/null | grep "Pages:" | awk '{print $2}')
+
+if [[ -n "$pdf_pages" ]]; then
+    log_success "PDF compiled: ${pdf_file} (${pdf_pages} pages, ${pdf_size})"
+else
+    log_success "PDF compiled: ${pdf_file} (${pdf_size})"
+fi
+echo ""
+
+# ------------------------------------------------------------------------------
+# ステップ2: チャプターリスト抽出
+# ------------------------------------------------------------------------------
+log_step "Step 2/2: Extracting chapters..."
+echo ""
+
+# tex2chapters関数が利用可能か確認
+if ! type tex2chapters &>/dev/null; then
+    log_error "tex2chapters function not found"
+    echo "" >&2
+    echo "Please ensure tex2chapters is loaded:" >&2
+    echo "  fpath=(~/.config/zsh/functions \$fpath)" >&2
+    echo "  autoload -Uz tex2chapters" >&2
+    return 1
+fi
+
+# チャプター抽出実行
+if ! tex2chapters "$tex_file"; then
+    log_error "Chapter extraction failed"
+    return 1
+fi
+
+# 生成ファイルの確認と詳細表示
+if [[ -f "$youtube_chapters" ]] && [[ -f "$movieviewer_chapters" ]]; then
+    local youtube_count=$(wc -l < "$youtube_chapters" | tr -d ' ')
+    local mv_count=$(wc -l < "$movieviewer_chapters" | tr -d ' ')
+
+    log_success "Chapters extracted: ${youtube_count} chapters"
+    log_info "  YouTube format:     ${youtube_chapters}"
+    log_info "  Movie Viewer format: ${movieviewer_chapters}"
+else
+    log_warn "Chapter files may not have been generated"
+fi
+echo ""
+
+# ------------------------------------------------------------------------------
+# 成果物レポート
+# ------------------------------------------------------------------------------
+echo "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+echo "${GREEN}✓ Workflow Complete: Rehearsal Report Finalized${NC}"
+echo "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+echo ""
+echo "${MAGENTA}Generated Files:${NC}"
+echo ""
+
+# PDF
+if [[ -f "$pdf_file" ]]; then
+    echo "  ${GREEN}✓${NC} PDF Report:"
+    echo "    ${CYAN}${pdf_file}${NC}"
+    if [[ -n "$pdf_pages" ]]; then
+        echo "    ${pdf_pages} pages, ${pdf_size}"
+    else
+        echo "    ${pdf_size}"
+    fi
+    echo ""
+fi
+
+# YouTubeチャプター
+if [[ -f "$youtube_chapters" ]]; then
+    echo "  ${GREEN}✓${NC} YouTube Chapters:"
+    echo "    ${CYAN}${youtube_chapters}${NC}"
+    echo "    $(wc -l < "$youtube_chapters" | tr -d ' ') chapters (HH:MM:SS format)"
+    echo ""
+    echo "    ${YELLOW}Usage:${NC}"
+    echo "    1. Copy the contents of this file"
+    echo "    2. Paste into YouTube video description"
+    echo "    3. Chapters will appear automatically"
+    echo ""
+fi
+
+# Movie Viewerチャプター
+if [[ -f "$movieviewer_chapters" ]]; then
+    echo "  ${GREEN}✓${NC} Movie Viewer Chapters:"
+    echo "    ${CYAN}${movieviewer_chapters}${NC}"
+    echo "    $(wc -l < "$movieviewer_chapters" | tr -d ' ') chapters (H:MM:SS.mmm format)"
+    echo ""
+    echo "    ${YELLOW}Usage:${NC}"
+    echo "    1. Open video in Movie Viewer (https://github.com/mashi727/movie-viewer)"
+    echo "    2. Load this chapter file"
+    echo "    3. Navigate with millisecond precision"
+    echo ""
+fi
+
+echo "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+echo ""
+
+# ------------------------------------------------------------------------------
+# サンプル表示（最初の3チャプター）
+# ------------------------------------------------------------------------------
+if [[ -f "$youtube_chapters" ]]; then
+    log_info "First 3 chapters (YouTube format):"
+    head -3 "$youtube_chapters" | while IFS= read -r line; do
+        echo "    ${line}"
+    done
+    echo ""
+fi
+
+# ------------------------------------------------------------------------------
+# 次のアクションの提案
+# ------------------------------------------------------------------------------
+log_info "Next actions:"
+echo ""
+echo "  ${YELLOW}•${NC} Review PDF:"
+echo "    ${GREEN}open \"${pdf_file}\"${NC}"
+echo ""
+echo "  ${YELLOW}•${NC} Upload YouTube chapters:"
+echo "    ${GREEN}cat \"${youtube_chapters}\" | pbcopy${NC}"
+echo "    (Chapters copied to clipboard)"
+echo ""
+echo "  ${YELLOW}•${NC} Process another video:"
+echo "    ${GREEN}rehearsal-download \"<YouTube_URL>\"${NC}"
+echo ""
+
+# ==============================================================================
+# 使用例:
+#   rehearsal-finalize "20251102_ドヴォルザーク交響曲第8番_リハーサル記録.tex"
+#
+# 出力例:
+#   [STEP] Step 1/2: Compiling LaTeX to PDF...
+#   [SUCCESS] PDF compiled: ...リハーサル記録.pdf (12 pages, 345KB)
+#   [STEP] Step 2/2: Extracting chapters...
+#   ✓ Generated 61 chapters
+#   [SUCCESS] Chapters extracted: 61 chapters
+#
+#   ═══════════════════════════════════════════════════════════
+#   ✓ Workflow Complete: Rehearsal Report Finalized
+#   ═══════════════════════════════════════════════════════════
+#
+#   Generated Files:
+#     ✓ PDF Report: ...リハーサル記録.pdf (12 pages, 345KB)
+#     ✓ YouTube Chapters: ...リハーサル記録_youtube.txt (61 chapters)
+#     ✓ Movie Viewer Chapters: ...リハーサル記録_movieviewer.txt (61 chapters)
+#
+#   Next actions:
+#     • Review PDF: open "...リハーサル記録.pdf"
+#     • Upload YouTube chapters: cat "...youtube.txt" | pbcopy
+# ==============================================================================

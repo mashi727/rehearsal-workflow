@@ -1,0 +1,211 @@
+#!/usr/bin/env zsh
+# ==============================================================================
+# rehearsal-download - リハーサル動画ダウンロード + Whisper文字起こし起動
+# ==============================================================================
+#
+# 概要:
+#   YouTube URLからリハーサル動画と自動生成字幕をダウンロードし、
+#   Whisper高精度文字起こしを起動する。リハーサル記録作成ワークフローの
+#   第1ステップ。
+#
+# 使用方法:
+#   rehearsal-download <YouTube_URL>
+#
+# 引数:
+#   YouTube_URL  - YouTubeリハーサル動画のURL（必須）
+#
+# 出力:
+#   YYYYMMDD_YYYY_MM_DD_タイトル.mp4      - 動画ファイル
+#   YYYYMMDD_YYYY_MM_DD_タイトル_yt.srt  - YouTube自動生成字幕
+#   （後にWhisper処理により）
+#   YYYYMMDD_YYYY_MM_DD_タイトル_wp.srt  - Whisper高精度字幕
+#
+# 処理フロー:
+#   1. YouTube動画 + 字幕をダウンロード（ytdl-claude）
+#   2. ダウンロードされたファイルを検出
+#   3. Whisper文字起こしを起動（whisper-remote --demucs）
+#   4. 次のステップ（/rehearsal）の使用方法を表示
+#
+# 依存:
+#   - ytdl-claude: YouTube動画ダウンロードツール
+#   - whisper-remote: リモートGPU Whisper文字起こしツール
+#
+# 作成日: 2025-11-05
+# 更新日: 2025-11-05
+# バージョン: 1.0.0
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 色付きログ出力の定義
+# ------------------------------------------------------------------------------
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly CYAN='\033[0;36m'
+readonly NC='\033[0m' # No Color
+
+log_info() {
+    echo "${GREEN}[INFO]${NC} $1"
+}
+
+log_warn() {
+    echo "${YELLOW}[WARN]${NC} $1"
+}
+
+log_error() {
+    echo "${RED}[ERROR]${NC} $1"
+}
+
+log_step() {
+    echo "${CYAN}[STEP]${NC} $1"
+}
+
+# ------------------------------------------------------------------------------
+# 引数チェック
+# ------------------------------------------------------------------------------
+local youtube_url="$1"
+
+if [[ -z "$youtube_url" ]]; then
+    log_error "YouTube URL is required"
+    echo "Usage: rehearsal-download <YouTube_URL>" >&2
+    echo "" >&2
+    echo "Example:" >&2
+    echo "  rehearsal-download \"https://youtu.be/VIDEO_ID\"" >&2
+    return 1
+fi
+
+# URLの基本的な検証
+if [[ ! "$youtube_url" =~ ^https?://(www\.)?(youtube\.com|youtu\.be)/ ]]; then
+    log_error "Invalid YouTube URL format"
+    echo "Expected: https://youtu.be/VIDEO_ID or https://www.youtube.com/watch?v=VIDEO_ID" >&2
+    return 1
+fi
+
+# ------------------------------------------------------------------------------
+# ステップ1: YouTube動画ダウンロード
+# ------------------------------------------------------------------------------
+log_step "Step 1/3: Downloading YouTube video and subtitles..."
+echo ""
+
+# ダウンロード前のmp4ファイル数を記録
+local before_count=$(ls -1 *.mp4 2>/dev/null | wc -l | tr -d ' ')
+
+if ! ytdl-claude "$youtube_url" -d; then
+    log_error "YouTube download failed"
+    return 1
+fi
+
+# ダウンロード後のmp4ファイル数を確認
+local after_count=$(ls -1 *.mp4 2>/dev/null | wc -l | tr -d ' ')
+
+if [[ $after_count -le $before_count ]]; then
+    log_error "No new video file detected after download"
+    return 1
+fi
+
+# ------------------------------------------------------------------------------
+# ステップ2: ダウンロードされたファイルの検出
+# ------------------------------------------------------------------------------
+log_step "Step 2/3: Detecting downloaded files..."
+echo ""
+
+# 最新のmp4ファイルを取得（タイムスタンプ順）
+local video_file=$(ls -t *.mp4 2>/dev/null | head -1)
+
+if [[ -z "$video_file" ]] || [[ ! -f "$video_file" ]]; then
+    log_error "Video file not found"
+    return 1
+fi
+
+# ベースネーム（拡張子なし）を取得
+local basename="${video_file:r}"
+
+# YouTube字幕ファイルの確認
+local yt_srt="${basename}_yt.srt"
+
+if [[ ! -f "$yt_srt" ]]; then
+    log_warn "YouTube subtitle not found: $yt_srt"
+    log_warn "Continuing without YouTube subtitles..."
+fi
+
+log_info "Downloaded files:"
+log_info "  Video:      ${video_file} ($(du -h "$video_file" | cut -f1))"
+if [[ -f "$yt_srt" ]]; then
+    log_info "  YouTube SRT: ${yt_srt} ($(wc -l < "$yt_srt" | tr -d ' ') lines)"
+fi
+echo ""
+
+# ------------------------------------------------------------------------------
+# ステップ3: Whisper高精度文字起こし起動
+# ------------------------------------------------------------------------------
+log_step "Step 3/3: Starting Whisper transcription (remote GPU)..."
+echo ""
+
+local wp_srt="${basename}_wp.srt"
+
+# 既にWhisper字幕が存在する場合はスキップ
+if [[ -f "$wp_srt" ]]; then
+    log_warn "Whisper subtitle already exists: $wp_srt"
+    log_warn "Skipping Whisper transcription."
+    echo ""
+else
+    log_info "Launching whisper-remote with Demucs audio separation..."
+    log_warn "This process may take 30 minutes to 2 hours depending on video length."
+    echo ""
+
+    if ! whisper-remote --demucs "$video_file"; then
+        log_error "Failed to start Whisper transcription"
+        return 1
+    fi
+
+    log_info "Whisper job submitted successfully!"
+    echo ""
+fi
+
+# ------------------------------------------------------------------------------
+# 次のステップの案内
+# ------------------------------------------------------------------------------
+echo "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+echo "${GREEN}✓ Step 1 Complete: Download & Whisper Launch${NC}"
+echo "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+echo ""
+log_info "Next steps:"
+echo ""
+echo "  ${YELLOW}1.${NC} Wait for Whisper to complete"
+echo "     Check for the file: ${CYAN}${wp_srt}${NC}"
+echo ""
+echo "  ${YELLOW}2.${NC} Once Whisper is complete, run Claude AI analysis:"
+echo "     ${GREEN}claude code${NC}"
+echo "     ${GREEN}/rehearsal${NC}"
+echo ""
+echo "  ${YELLOW}3.${NC} After LaTeX generation, finalize the workflow:"
+echo "     ${GREEN}rehearsal-finalize <tex_file>${NC}"
+echo ""
+echo "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
+echo ""
+log_info "Files to monitor:"
+echo "  - Video:       ${video_file}"
+if [[ -f "$yt_srt" ]]; then
+    echo "  - YouTube SRT: ${yt_srt}"
+fi
+echo "  - Whisper SRT: ${wp_srt} ${YELLOW}(waiting...)${NC}"
+echo ""
+
+# ==============================================================================
+# 使用例:
+#   rehearsal-download "https://youtu.be/dQw4w9WgXcQ"
+#
+# 出力例:
+#   [STEP] Step 1/3: Downloading YouTube video and subtitles...
+#   [INFO] Downloaded: 20251102_2025_11_2_定演リハ_中央_ドヴォルザーク8.mp4
+#   [STEP] Step 2/3: Detecting downloaded files...
+#   [INFO] Video: 20251102_2025_11_2_定演リハ_中央_ドヴォルザーク8.mp4 (1.2GB)
+#   [STEP] Step 3/3: Starting Whisper transcription...
+#   [INFO] Whisper job submitted successfully!
+#
+#   Next steps:
+#   1. Wait for Whisper to complete (check for *_wp.srt)
+#   2. Run: claude code → /rehearsal
+#   3. Run: rehearsal-finalize <tex_file>
+# ==============================================================================
